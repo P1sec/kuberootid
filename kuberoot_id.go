@@ -49,51 +49,47 @@ func getKubernetesClient() (kubernetes.Interface, *rest.Config) {
 func main() {
     clientset, config := getKubernetesClient()
 
-    //ListNamespaces function call returns a list of namespaces in the kubernetes cluster
-    namespaces, err := ListNamespaces(clientset)
+    vulns_pods_count := 0
+
+    pods, err := ListPods(clientset)
     if err != nil {
-        fmt.Println(err)
+        fmt.Println(err.Error)
         os.Exit(1)
     }
 
-    vulns_pods_count := 0
-
     fmt.Printf("%-20s %-50s %-50s %-10s\n", "Namespace", "Pod name", "Owner Name", "Owner Kind")
-    for _, namespace := range namespaces.Items {
-        pods, err := ListPods(namespace.Name, clientset)
-        if err != nil {
-            fmt.Println(err.Error)
-            os.Exit(1)
-        }
-        for _, pod := range pods.Items {
-            is_root, err := podExec(namespace.Name, pod.Name, clientset, config)
 
-            if err != nil {
-                fmt.Printf("Could not verify %v: %v\n", pod.Name, err)
-                continue
-            }  
-            if is_root {
-                vulns_pods_count++
-                if len(pod.OwnerReferences) > 0 {
-                    owner := pod.OwnerReferences[0]
-                    ownerName := owner.Name
-                    ownerKind := owner.Kind
-                    if owner.Kind == "ReplicaSet" {
-                       upperOwner, ok := findReplicaSetOwner(namespace.Name, owner, clientset)
-                       if ok {
-                         ownerName = upperOwner.Name
-                         ownerKind = upperOwner.Kind
-                       }
-                    }
-                    fmt.Printf("%-20s %-50s %-50s %-10s\n", pod.Namespace, pod.Name, ownerName, ownerKind)
-                } else {
-                    fmt.Printf("%-20s %-50s\n", pod.Namespace, pod.Name)
+    var namespace string
+    for _, pod := range pods.Items {
+        namespace = pod.ObjectMeta.Namespace
+        is_root, err := podExec(namespace, pod.Name, clientset, config)
+
+        if err != nil {
+            fmt.Printf("Could not verify %v: %v\n", pod.Name, err)
+            continue
+        }  
+        if is_root {
+            vulns_pods_count++
+            if len(pod.OwnerReferences) > 0 {
+                owner := pod.OwnerReferences[0]
+                ownerName := owner.Name
+                ownerKind := owner.Kind
+                if owner.Kind == "ReplicaSet" {
+                   upperOwner, ok := findReplicaSetOwner(namespace, owner, clientset)
+                   if ok {
+                     ownerName = upperOwner.Name
+                     ownerKind = upperOwner.Kind
+                   }
                 }
+                fmt.Printf("%-20s %-50s %-50s %-10s\n", pod.Namespace, pod.Name, ownerName, ownerKind)
+            } else {
+                fmt.Printf("%-20s %-50s\n", pod.Namespace, pod.Name)
             }
         }
     }
     fmt.Printf("Total pods vulnerable: %d\n", vulns_pods_count)
 }
+
 
 func findReplicaSetOwner(namespace string, ownerRef metav1.OwnerReference, client kubernetes.Interface) (*metav1.OwnerReference, bool) {
     replicaSet, err := client.AppsV1().ReplicaSets(namespace).Get(context.TODO(), ownerRef.Name, metav1.GetOptions{})
@@ -109,8 +105,8 @@ func findReplicaSetOwner(namespace string, ownerRef metav1.OwnerReference, clien
     return nil, false
 }
 
-func ListPods(namespace string, client kubernetes.Interface) (*v1.PodList, error) {
-    pods, err := client.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{})
+func ListPods(client kubernetes.Interface) (*v1.PodList, error) {
+    pods, err := client.CoreV1().Pods("").List(context.Background(), metav1.ListOptions{})
     if err != nil {
         err = fmt.Errorf("error getting pods: %v\n", err)
         return nil, err
@@ -118,17 +114,8 @@ func ListPods(namespace string, client kubernetes.Interface) (*v1.PodList, error
     return pods, nil
 }
 
-func ListNamespaces(client kubernetes.Interface) (*v1.NamespaceList, error) {
-    namespaces, err := client.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{})
-    if err != nil {
-        err = fmt.Errorf("error getting namespaces: %v\n", err)
-        return nil, err
-    }
-    return namespaces, nil
-}
 
-
-func podExec(namespace string, podName string, client kubernetes.Interface, config *rest.Config) (string, bool, error) {
+func podExec(namespace string, podName string, client kubernetes.Interface, config *rest.Config) (bool, error) {
 
     pod, err := client.CoreV1().Pods(namespace).Get(context.Background(), podName, metav1.GetOptions{})
     if err != nil {
