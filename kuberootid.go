@@ -50,7 +50,7 @@ func main() {
 
     vulns_pods_count := 0
 
-    pods, err := ListPods(clientset)
+    pods, err := listPods(clientset)
     if err != nil {
         fmt.Println(err.Error)
         os.Exit(1)
@@ -104,7 +104,7 @@ func findReplicaSetOwner(namespace string, ownerRef metav1.OwnerReference, clien
     return nil, false
 }
 
-func ListPods(client kubernetes.Interface) (*v1.PodList, error) {
+func listPods(client kubernetes.Interface) (*v1.PodList, error) {
     pods, err := client.CoreV1().Pods("").List(context.Background(), metav1.ListOptions{})
     if err != nil {
         err = fmt.Errorf("error getting pods: %v\n", err)
