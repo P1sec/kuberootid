@@ -1,4 +1,4 @@
-module p1sec.com/kuberoot_id
+module p1sec.com/kuberootid
 
 go 1.20
 

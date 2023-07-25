@@ -2,7 +2,6 @@ package main
 
 // TODO
 // - Container name
-// - Perfs
 // - Detect root when `id` not in path ?
 //   * With cat : /proc/$$/status ( grep -e "^Uid:" -e "^Gid:" /proc/$$/status )
 
