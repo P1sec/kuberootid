@@ -52,7 +52,7 @@ func main() {
 
     pods, err := listPods(clientset)
     if err != nil {
-        fmt.Println(err.Error)
+        fmt.Println(err)
         os.Exit(1)
     }
 
@@ -93,7 +93,7 @@ func main() {
 func findReplicaSetOwner(namespace string, ownerRef metav1.OwnerReference, client kubernetes.Interface) (*metav1.OwnerReference, bool) {
     replicaSet, err := client.AppsV1().ReplicaSets(namespace).Get(context.TODO(), ownerRef.Name, metav1.GetOptions{})
     if err != nil {
-        fmt.Println(err.Error)
+        fmt.Println(err)
         os.Exit(1)
     }
     
