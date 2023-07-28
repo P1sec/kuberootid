@@ -44,8 +44,10 @@ func getKubernetesClient() (kubernetes.Interface, *rest.Config) {
 func main() {
     client, config := getKubernetesClient()
 
-    // vulns_pods_count := 0
+    vulns_pods_count := 0
     vulns_container_count := 0
+    total_pods := 0
+    total_containers := 0
 
     pods, err := listPods(client)
     if err != nil {
@@ -56,6 +58,7 @@ func main() {
     fmt.Printf("%-20s %-50s %-20s %-50s %-10s\n", "Namespace", "Pod name", "Container", "Owner Name", "Owner Kind")
 
     var namespace string
+    var found_container_root bool
     for _, pod := range pods.Items {
         namespace = pod.ObjectMeta.Namespace
         
@@ -66,6 +69,8 @@ func main() {
 
         containers := pod.Spec.Containers
         for _, container := range containers {
+            total_containers++
+            found_container_root = false
             is_root, err := isContainerRunningRoot(namespace, pod.Name, container.Name, client, config)
             if err != nil {
                 fmt.Fprintf(os.Stderr, "Could not verify %v: %v\n", pod.Name, err)
@@ -73,6 +78,7 @@ func main() {
             }
             if is_root {
                 vulns_container_count++
+                found_container_root = true
                 if len(pod.OwnerReferences) > 0 {
                     ownerName, ownerKind := findOwner(pod, namespace, client)
                     fmt.Printf("%-20s %-50s %-20s %-50s %-10s\n", pod.Namespace, pod.Name, container.Name, ownerName, ownerKind)
@@ -81,8 +87,15 @@ func main() {
                 }
             }
         }
+        total_pods++
+        if found_container_root {
+            vulns_pods_count++
+        }
     }
-    fmt.Printf("Total containers vulnerable: %d\n", vulns_container_count)
+    fmt.Printf("Total containers: %d\n", total_containers)
+    fmt.Printf("Containers runnig as root: %d\n", vulns_container_count)
+    fmt.Printf("Total pods: %d\n", total_pods)
+    fmt.Printf("Pods running with at least one container running root: %d\n", vulns_pods_count)
 }
 
 func findOwner(pod *v1.Pod, namespace string, client kubernetes.Interface) (string, string) {
