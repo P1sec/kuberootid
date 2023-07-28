@@ -1,10 +1,5 @@
 package main
 
-// TODO
-// - Container name
-// - Detect root when `id` not in path ?
-//   * With cat : /proc/$$/status ( grep -e "^Uid:" -e "^Gid:" /proc/$$/status )
-
 import (
     "context"
     "fmt"
@@ -22,6 +17,7 @@ import (
     "k8s.io/client-go/tools/remotecommand"
 )
 
+
 func getKubernetesClient() (kubernetes.Interface, *rest.Config) {
     userHomeDir, err := os.UserHomeDir()
     if err != nil {
@@ -37,58 +33,71 @@ func getKubernetesClient() (kubernetes.Interface, *rest.Config) {
         os.Exit(1)
     }
 
-    clientset, err := kubernetes.NewForConfig(kubeConfig)
+    client, err := kubernetes.NewForConfig(kubeConfig)
     if err != nil {
         fmt.Printf("error getting kubernetes config: %v\n", err)
         os.Exit(1)
     }
-    return clientset, kubeConfig
+    return client, kubeConfig
 }
 
 func main() {
-    clientset, config := getKubernetesClient()
+    client, config := getKubernetesClient()
 
-    vulns_pods_count := 0
+    // vulns_pods_count := 0
+    vulns_container_count := 0
 
-    pods, err := listPods(clientset)
+    pods, err := listPods(client)
     if err != nil {
         fmt.Println(err)
         os.Exit(1)
     }
 
-    fmt.Printf("%-20s %-50s %-50s %-10s\n", "Namespace", "Pod name", "Owner Name", "Owner Kind")
+    fmt.Printf("%-20s %-50s %-20s %-50s %-10s\n", "Namespace", "Pod name", "Container", "Owner Name", "Owner Kind")
 
     var namespace string
     for _, pod := range pods.Items {
         namespace = pod.ObjectMeta.Namespace
-        is_root, err := podExec(namespace, pod.Name, clientset, config)
-
+        
+        pod, err := client.CoreV1().Pods(namespace).Get(context.Background(), pod.Name, metav1.GetOptions{})
         if err != nil {
-            fmt.Printf("Could not verify %v: %v\n", pod.Name, err)
-            continue
-        }  
-        if is_root {
-            vulns_pods_count++
-            if len(pod.OwnerReferences) > 0 {
-                owner := pod.OwnerReferences[0]
-                ownerName := owner.Name
-                ownerKind := owner.Kind
-                if owner.Kind == "ReplicaSet" {
-                   upperOwner, ok := findReplicaSetOwner(namespace, owner, clientset)
-                   if ok {
-                     ownerName = upperOwner.Name
-                     ownerKind = upperOwner.Kind
-                   }
+            panic(err)
+        }
+
+        containers := pod.Spec.Containers
+        for _, container := range containers {
+            is_root, err := isContainerRunningRoot(namespace, pod.Name, container.Name, client, config)
+            if err != nil {
+                fmt.Fprintf(os.Stderr, "Could not verify %v: %v\n", pod.Name, err)
+                continue
+            }
+            if is_root {
+                vulns_container_count++
+                if len(pod.OwnerReferences) > 0 {
+                    ownerName, ownerKind := findOwner(pod, namespace, client)
+                    fmt.Printf("%-20s %-50s %-20s %-50s %-10s\n", pod.Namespace, pod.Name, container.Name, ownerName, ownerKind)
+                } else {
+                    fmt.Printf("%-20s %-50s\n", pod.Namespace, pod.Name)
                 }
-                fmt.Printf("%-20s %-50s %-50s %-10s\n", pod.Namespace, pod.Name, ownerName, ownerKind)
-            } else {
-                fmt.Printf("%-20s %-50s\n", pod.Namespace, pod.Name)
             }
         }
     }
-    fmt.Printf("Total pods vulnerable: %d\n", vulns_pods_count)
+    fmt.Printf("Total containers vulnerable: %d\n", vulns_container_count)
 }
 
+func findOwner(pod *v1.Pod, namespace string, client kubernetes.Interface) (string, string) {
+    owner := pod.OwnerReferences[0]
+    ownerName := owner.Name
+    ownerKind := owner.Kind
+    if owner.Kind == "ReplicaSet" {
+       upperOwner, ok := findReplicaSetOwner(namespace, owner, client)
+       if ok {
+         ownerName = upperOwner.Name
+         ownerKind = upperOwner.Kind
+       }
+    }
+    return ownerName, ownerKind
+}
 
 func findReplicaSetOwner(namespace string, ownerRef metav1.OwnerReference, client kubernetes.Interface) (*metav1.OwnerReference, bool) {
     replicaSet, err := client.AppsV1().ReplicaSets(namespace).Get(context.TODO(), ownerRef.Name, metav1.GetOptions{})
@@ -114,45 +123,39 @@ func listPods(client kubernetes.Interface) (*v1.PodList, error) {
 }
 
 
-func podExec(namespace string, podName string, client kubernetes.Interface, config *rest.Config) (bool, error) {
+func isContainerRunningRoot(namespace string, podName string, containerName string, client kubernetes.Interface, config *rest.Config) (bool, error) {
 
-    pod, err := client.CoreV1().Pods(namespace).Get(context.Background(), podName, metav1.GetOptions{})
+
+    req := client.CoreV1().RESTClient().Post().
+        Namespace(namespace).
+        Resource("pods").
+        Name(podName).
+        SubResource("exec").
+        VersionedParams(&v1.PodExecOptions{
+            Container: containerName,
+            Command:   []string{"id"},
+            Stdout:    true,
+            Stderr:    true,
+            TTY:       false,
+        }, scheme.ParameterCodec)
+
+    exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
     if err != nil {
         panic(err)
     }
 
-    containers := pod.Spec.Containers
-    for _, container := range containers {
-        req := client.CoreV1().RESTClient().Post().
-            Namespace(namespace).
-            Resource("pods").
-            Name(podName).
-            SubResource("exec").
-            VersionedParams(&v1.PodExecOptions{
-                Container: container.Name,
-                Command:   []string{"id"},
-                Stdout:    true,
-                Stderr:    true,
-                TTY:       false,
-            }, scheme.ParameterCodec)
+    var stdout, stderr bytes.Buffer
+    err = exec.Stream(remotecommand.StreamOptions{
+        Stdout: &stdout,
+        Stderr: &stderr,
+        Tty:    false,
+    })
 
-        exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
-        if err != nil {
-            panic(err)
-        }
+    output := stdout.String()
 
-        var stdout, stderr bytes.Buffer
-        err = exec.Stream(remotecommand.StreamOptions{
-            Stdout: &stdout,
-            Stderr: &stderr,
-            Tty:    false,
-        })
-
-        output := stdout.String()
-
-        if strings.Contains(output, "uid=0(root)") {
-            return true, err
-        }
+    if strings.Contains(output, "uid=0(root)") {
+        return true, err
     }
+    
     return false, err
 }
